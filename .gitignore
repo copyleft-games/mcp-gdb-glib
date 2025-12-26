@@ -1,0 +1,51 @@
+# Build output
+build/
+*.o
+*.so
+*.a
+
+# Editor files
+*~
+*.swp
+*.swo
+.*.swp
+\#*\#
+.#*
+
+# IDE directories
+.idea/
+.vscode/
+*.code-workspace
+
+# Compiled binaries
+gdb-mcp-server
+
+# Debug files
+*.dSYM/
+core
+core.*
+vgcore.*
+
+# pkg-config generated
+*.pc
+
+# Backup files
+*.bak
+*.orig
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test output
+test-results/
+*.log
+
+# GObject Introspection output
+*.gir
+*.typelib
+
+# Temporary files
+tmp/
+temp/
+*.tmp
