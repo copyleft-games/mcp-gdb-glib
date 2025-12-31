@@ -7,7 +7,7 @@
 
 #include <glib.h>
 #include <json-glib/json-glib.h>
-#include <mcp/mcp.h>
+#include <mcp.h>
 #include "mcp-gdb/gdb-session-manager.h"
 #include "src/tools/gdb-tools-internal.h"
 

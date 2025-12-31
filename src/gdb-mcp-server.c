@@ -13,7 +13,7 @@
 
 #include "mcp-gdb/gdb-mcp-server.h"
 #include "tools/gdb-tools-internal.h"
-#include <mcp/mcp.h>
+#include <mcp.h>
 
 /* ========================================================================== */
 /* GdbMcpServer Structure                                                     */

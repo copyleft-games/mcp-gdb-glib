@@ -8,7 +8,7 @@
 #ifndef GDB_TOOLS_INTERNAL_H
 #define GDB_TOOLS_INTERNAL_H
 
-#include <mcp/mcp.h>
+#include <mcp.h>
 #include <json-glib/json-glib.h>
 
 #include "mcp-gdb/gdb-session.h"

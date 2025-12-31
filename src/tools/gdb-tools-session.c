@@ -90,7 +90,6 @@ gdb_tools_handle_gdb_start (McpServer   *server G_GNUC_UNUSED,
     const gchar *gdb_path = NULL;
     const gchar *working_dir = NULL;
     SyncStartData sync_data;
-    guint timeout_id;
 
     /* Extract arguments */
     if (arguments != NULL)
@@ -129,11 +128,16 @@ gdb_tools_handle_gdb_start (McpServer   *server G_GNUC_UNUSED,
         /* Add timeout to the same context */
         timeout_source = g_timeout_source_new (gdb_session_get_timeout_ms (session) + 1000);
         g_source_set_callback (timeout_source, on_start_timeout, loop, NULL);
-        timeout_id = g_source_attach (timeout_source, context);
-        g_source_unref (timeout_source);
+        g_source_attach (timeout_source, context);
 
         g_main_loop_run (loop);
-        g_source_remove (timeout_id);
+
+        /* Destroy the timeout source - use g_source_destroy since the source
+         * is attached to our local context, not the global default context.
+         */
+        g_source_destroy (timeout_source);
+        g_source_unref (timeout_source);
+
         g_main_context_pop_thread_default (context);
     }
 

@@ -9,7 +9,7 @@
 #define GDB_MCP_SERVER_H
 
 #include <glib-object.h>
-#include <mcp/mcp.h>
+#include <mcp.h>
 #include "gdb-session-manager.h"
 
 G_BEGIN_DECLS

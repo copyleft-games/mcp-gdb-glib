@@ -28,7 +28,7 @@ PKG_CFLAGS := $(shell pkg-config --cflags $(PKGS))
 PKG_LIBS := $(shell pkg-config --libs $(PKGS))
 
 # mcp-glib paths
-MCP_GLIB_CFLAGS := -I$(MCP_GLIB_DIR)
+MCP_GLIB_CFLAGS := -I$(MCP_GLIB_DIR)/src
 MCP_GLIB_LIBS := -L$(MCP_GLIB_DIR)/build -lmcp-glib-1.0 -Wl,-rpath,$(CURDIR)/$(MCP_GLIB_DIR)/build
 
 # Include paths

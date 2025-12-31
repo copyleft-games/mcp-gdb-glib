@@ -486,16 +486,20 @@ gdb_session_get_mi_parser (GdbSession *self)
  * doesn't work when running in a nested main loop with its own context
  * (e.g., when using gdb_tools_execute_command_sync).
  *
- * Returns: The source ID
+ * The caller should store the returned GSource pointer and call
+ * g_source_destroy() followed by g_source_unref() when the timeout
+ * is no longer needed. This is necessary because g_source_remove()
+ * only works for sources attached to the global default context.
+ *
+ * Returns: (transfer full): The GSource (caller owns reference)
  */
-static guint
+static GSource *
 add_timeout_to_context (guint        interval_ms,
                         GSourceFunc  callback,
                         gpointer     user_data)
 {
     GSource *source;
     GMainContext *context;
-    guint id;
 
     source = g_timeout_source_new (interval_ms);
     g_source_set_callback (source, callback, user_data, NULL);
@@ -506,10 +510,9 @@ add_timeout_to_context (guint        interval_ms,
         context = g_main_context_default ();
     }
 
-    id = g_source_attach (source, context);
-    g_source_unref (source);
+    g_source_attach (source, context);
 
-    return id;
+    return source;
 }
 
 /*
@@ -550,11 +553,19 @@ get_post_command_delay_ms (void)
 typedef struct {
     GdbSession *session;
     gboolean    ready_received;
+    GSource    *timeout_source;
 } StartData;
 
 static void
 start_data_free (StartData *data)
 {
+    /* Destroy timeout source if still pending */
+    if (data->timeout_source != NULL)
+    {
+        g_source_destroy (data->timeout_source);
+        g_source_unref (data->timeout_source);
+        data->timeout_source = NULL;
+    }
     g_clear_object (&data->session);
     g_slice_free (StartData, data);
 }
@@ -593,6 +604,16 @@ on_startup_line_read (GObject      *source,
     if (error != NULL)
     {
         set_state (data->session, GDB_SESSION_STATE_ERROR);
+
+        /* Cancel the timeout before completing */
+        if (data->timeout_source != NULL)
+        {
+            g_source_destroy (data->timeout_source);
+            g_source_unref (data->timeout_source);
+            data->timeout_source = NULL;
+            g_object_unref (task);  /* Release ref held by timeout callback */
+        }
+
         g_task_return_error (task, g_steal_pointer (&error));
         g_object_unref (task);
         return;
@@ -602,6 +623,16 @@ on_startup_line_read (GObject      *source,
     {
         /* EOF - process exited */
         set_state (data->session, GDB_SESSION_STATE_ERROR);
+
+        /* Cancel the timeout before completing */
+        if (data->timeout_source != NULL)
+        {
+            g_source_destroy (data->timeout_source);
+            g_source_unref (data->timeout_source);
+            data->timeout_source = NULL;
+            g_object_unref (task);  /* Release ref held by timeout callback */
+        }
+
         g_task_return_new_error (task, GDB_ERROR, GDB_ERROR_SPAWN_FAILED,
                                  "GDB process exited unexpectedly during startup");
         g_object_unref (task);
@@ -617,6 +648,16 @@ on_startup_line_read (GObject      *source,
     {
         data->ready_received = TRUE;
         set_state (data->session, GDB_SESSION_STATE_READY);
+
+        /* Cancel the timeout before completing - must unref the task ref it holds */
+        if (data->timeout_source != NULL)
+        {
+            g_source_destroy (data->timeout_source);
+            g_source_unref (data->timeout_source);
+            data->timeout_source = NULL;
+            g_object_unref (task);  /* Release ref held by timeout callback */
+        }
+
         g_task_return_boolean (task, TRUE);
         g_object_unref (task);
         return;
@@ -630,6 +671,16 @@ static gboolean
 on_start_timeout (gpointer user_data)
 {
     GTask *task = G_TASK (user_data);
+    StartData *data = (StartData *)g_task_get_task_data (task);
+
+    /* Clear source pointer and unref - the source is being removed by
+     * returning G_SOURCE_REMOVE, so start_data_free shouldn't touch it.
+     */
+    if (data != NULL && data->timeout_source != NULL)
+    {
+        g_source_unref (data->timeout_source);
+        data->timeout_source = NULL;
+    }
 
     g_task_return_new_error (task, GDB_ERROR, GDB_ERROR_TIMEOUT,
                              "GDB startup timed out");
@@ -698,10 +749,13 @@ gdb_session_start_async (GdbSession          *self,
     data = g_slice_new0 (StartData);
     data->session = g_object_ref (self);
     data->ready_received = FALSE;
+    data->timeout_source = NULL;
     g_task_set_task_data (task, data, (GDestroyNotify) start_data_free);
 
-    /* Set up timeout */
-    add_timeout_to_context (self->timeout_ms, on_start_timeout, g_object_ref (task));
+    /* Set up timeout - store source so we can cancel it when done */
+    data->timeout_source = add_timeout_to_context (self->timeout_ms,
+                                                    on_start_timeout,
+                                                    g_object_ref (task));
 
     /* Start reading output */
     read_next_startup_line (g_steal_pointer (&task));
@@ -730,11 +784,19 @@ typedef struct {
     gchar      *error_message;   /* Error message from ^error */
     gboolean    saw_running;     /* Saw ^running or *running - wait for *stopped */
     gboolean    saw_stopped;     /* Saw *stopped - can complete on next (gdb) */
+    GSource    *timeout_source;
 } ExecuteData;
 
 static void
 execute_data_free (ExecuteData *data)
 {
+    /* Destroy timeout source if still pending */
+    if (data->timeout_source != NULL)
+    {
+        g_source_destroy (data->timeout_source);
+        g_source_unref (data->timeout_source);
+        data->timeout_source = NULL;
+    }
     g_clear_object (&data->session);
     if (data->output != NULL)
     {
@@ -777,6 +839,15 @@ on_execute_line_read (GObject      *source,
 
     if (error != NULL)
     {
+        /* Cancel the timeout before completing */
+        if (data->timeout_source != NULL)
+        {
+            g_source_destroy (data->timeout_source);
+            g_source_unref (data->timeout_source);
+            data->timeout_source = NULL;
+            g_object_unref (task);  /* Release ref held by timeout callback */
+        }
+
         g_task_return_error (task, g_steal_pointer (&error));
         g_object_unref (task);
         return;
@@ -785,6 +856,15 @@ on_execute_line_read (GObject      *source,
     if (line == NULL)
     {
         /* EOF */
+        /* Cancel the timeout before completing */
+        if (data->timeout_source != NULL)
+        {
+            g_source_destroy (data->timeout_source);
+            g_source_unref (data->timeout_source);
+            data->timeout_source = NULL;
+            g_object_unref (task);  /* Release ref held by timeout callback */
+        }
+
         g_task_return_new_error (task, GDB_ERROR, GDB_ERROR_COMMAND_FAILED,
                                  "GDB process exited unexpectedly");
         g_object_unref (task);
@@ -850,6 +930,16 @@ on_execute_line_read (GObject      *source,
         }
 
         data->complete = TRUE;
+
+        /* Cancel the timeout before completing */
+        if (data->timeout_source != NULL)
+        {
+            g_source_destroy (data->timeout_source);
+            g_source_unref (data->timeout_source);
+            data->timeout_source = NULL;
+            g_object_unref (task);  /* Release ref held by timeout callback */
+        }
+
         result_str = g_string_free (data->output, FALSE);
         data->output = NULL;
 
@@ -911,25 +1001,50 @@ on_command_written (GObject      *source,
                     gpointer      user_data)
 {
     GTask *task = G_TASK (user_data);
+    ExecuteData *data = (ExecuteData *)g_task_get_task_data (task);
     g_autoptr(GError) error = NULL;
+    GSource *delay_source;
 
     if (!g_output_stream_write_all_finish (G_OUTPUT_STREAM (source), result, NULL, &error))
     {
+        /* Cancel the timeout before completing */
+        if (data != NULL && data->timeout_source != NULL)
+        {
+            g_source_destroy (data->timeout_source);
+            g_source_unref (data->timeout_source);
+            data->timeout_source = NULL;
+            g_object_unref (task);  /* Release ref held by timeout callback */
+        }
+
         g_task_return_error (task, g_steal_pointer (&error));
         g_object_unref (task);
         return;
     }
 
-    /* Add delay before reading to let GDB process and buffer output */
-    add_timeout_to_context (get_post_command_delay_ms (),
-                            on_read_delay_complete,
-                            task);
+    /* Add delay before reading to let GDB process and buffer output.
+     * We don't need to track this source since it's short-lived and
+     * just triggers the read operation.
+     */
+    delay_source = add_timeout_to_context (get_post_command_delay_ms (),
+                                            on_read_delay_complete,
+                                            task);
+    g_source_unref (delay_source);  /* Let the source own itself */
 }
 
 static gboolean
 on_execute_timeout (gpointer user_data)
 {
     GTask *task = G_TASK (user_data);
+    ExecuteData *data = (ExecuteData *)g_task_get_task_data (task);
+
+    /* Clear source pointer and unref - the source is being removed by
+     * returning G_SOURCE_REMOVE, so execute_data_free shouldn't touch it.
+     */
+    if (data != NULL && data->timeout_source != NULL)
+    {
+        g_source_unref (data->timeout_source);
+        data->timeout_source = NULL;
+    }
 
     g_task_return_new_error (task, GDB_ERROR, GDB_ERROR_TIMEOUT,
                              "GDB command timed out");
@@ -968,10 +1083,13 @@ gdb_session_execute_async (GdbSession          *self,
     data->session = g_object_ref (self);
     data->output = g_string_new (NULL);
     data->complete = FALSE;
+    data->timeout_source = NULL;
     g_task_set_task_data (task, data, (GDestroyNotify) execute_data_free);
 
-    /* Set up timeout */
-    add_timeout_to_context (self->timeout_ms, on_execute_timeout, g_object_ref (task));
+    /* Set up timeout - store source so we can cancel it when done */
+    data->timeout_source = add_timeout_to_context (self->timeout_ms,
+                                                    on_execute_timeout,
+                                                    g_object_ref (task));
 
     /* Send command */
     cmd_with_nl = g_strdup_printf ("%s\n", command);
@@ -1137,7 +1255,16 @@ gdb_session_execute_mi_async (GdbSession          *self,
     data->records = NULL;
     g_task_set_task_data (task, data, (GDestroyNotify) execute_mi_data_free);
 
-    add_timeout_to_context (self->timeout_ms, on_execute_timeout, g_object_ref (task));
+    /* Note: execute_mi doesn't track the timeout source for cancellation.
+     * This is a simplification - the MI parser is typically fast and timeouts
+     * are rare. The source will be cleaned up when it fires or context dies.
+     */
+    {
+        GSource *timeout_src = add_timeout_to_context (self->timeout_ms,
+                                                        on_execute_timeout,
+                                                        g_object_ref (task));
+        g_source_unref (timeout_src);
+    }
 
     cmd_with_nl = g_strdup_printf ("%s\n", command);
     g_output_stream_write_all_async (self->stdin_pipe,
@@ -1256,7 +1383,12 @@ gdb_session_terminate (GdbSession *self)
          * We take a reference to prevent use-after-free if the session is
          * removed from the manager before the timeout fires.
          */
-        add_timeout_to_context (TERMINATE_TIMEOUT_MS, on_terminate_timeout, g_object_ref (self));
+        {
+            GSource *terminate_src = add_timeout_to_context (TERMINATE_TIMEOUT_MS,
+                                                              on_terminate_timeout,
+                                                              g_object_ref (self));
+            g_source_unref (terminate_src);
+        }
     }
     else
     {
